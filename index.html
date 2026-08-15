@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Image ↔ Base64</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; font-family: Arial, sans-serif; background: #f4f6fb; color: #202431; }
+        .container { width: min(1100px, calc(100% - 32px)); margin: 40px auto; }
+        h1 { margin-bottom: 8px; }
+        .subtitle { margin-top: 0; color: #667085; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
+        .card { background: #fff; border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(31, 41, 55, 0.08); }
+        label { display: block; font-weight: 700; margin-bottom: 10px; }
+        input[type="file"], textarea { width: 100%; }
+        input[type="file"] { padding: 14px; border: 1px solid #d0d5dd; border-radius: 10px; background: #fff; }
+        textarea { min-height: 240px; resize: vertical; padding: 14px; border: 1px solid #d0d5dd; border-radius: 10px; font-family: monospace; line-height: 1.45; }
+        button { margin-top: 14px; border: 0; border-radius: 10px; padding: 12px 18px; cursor: pointer; font-weight: 700; background: #5b5bd6; color: #fff; }
+        button:disabled { opacity: .55; cursor: not-allowed; }
+        .secondary { background: #344054; }
+        .message { margin-top: 20px; padding: 14px 16px; border-radius: 10px; display: none; }
+        .message.error { display: block; background: #fee4e2; color: #b42318; }
+        .message.success { display: block; background: #dcfae6; color: #067647; }
+        .result { margin-top: 22px; display: none; }
+        .result.visible { display: block; }
+        .preview { max-width: 100%; max-height: 520px; display: block; margin-top: 14px; border-radius: 12px; border: 1px solid #e4e7ec; }
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+        .meta { margin-top: 10px; color: #667085; font-size: 14px; }
+        @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Изображение ↔ Base64</h1>
+    <p class="subtitle">Всё происходит прямо в браузере. Картинка никуда не загружается.</p>
+
+    <div id="message" class="message"></div>
+
+    <div class="grid">
+        <section class="card">
+            <h2>Картинка → Base64</h2>
+            <label for="image">Выбери изображение</label>
+            <input id="image" type="file" accept="image/*">
+            <button id="encodeButton" type="button">Закодировать</button>
+
+            <div id="encodeResult" class="result">
+                <label for="encodedText">Base64</label>
+                <textarea id="encodedText" readonly></textarea>
+                <div id="imageMeta" class="meta"></div>
+                <div class="actions">
+                    <button id="copyButton" type="button">Скопировать</button>
+                    <button id="copyDataUrlButton" type="button" class="secondary">Скопировать Data URL</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>Base64 → картинка</h2>
+            <label for="base64Input">Вставь Base64</label>
+            <textarea id="base64Input" placeholder="iVBORw0KGgoAAA... или data:image/png;base64,..."></textarea>
+            <button id="decodeButton" type="button" class="secondary">Показать изображение</button>
+
+            <div id="decodeResult" class="result">
+                <img id="preview" class="preview" alt="Декодированное изображение">
+                <div id="decodedMeta" class="meta"></div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<script>
+    const maxFileSize = 10 * 1024 * 1024;
+
+    const imageInput = document.getElementById('image');
+    const encodeButton = document.getElementById('encodeButton');
+    const encodedText = document.getElementById('encodedText');
+    const encodeResult = document.getElementById('encodeResult');
+    const imageMeta = document.getElementById('imageMeta');
+    const copyButton = document.getElementById('copyButton');
+    const copyDataUrlButton = document.getElementById('copyDataUrlButton');
+    const base64Input = document.getElementById('base64Input');
+    const decodeButton = document.getElementById('decodeButton');
+    const decodeResult = document.getElementById('decodeResult');
+    const preview = document.getElementById('preview');
+    const decodedMeta = document.getElementById('decodedMeta');
+    const message = document.getElementById('message');
+
+    let lastDataUrl = '';
+
+    function showMessage(text, type = 'error') {
+        message.textContent = text;
+        message.className = `message ${type}`;
+    }
+
+    function clearMessage() {
+        message.textContent = '';
+        message.className = 'message';
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return `${bytes} Б`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+        return `${(bytes / (1024 * 1024)).toFixed(2)} МБ`;
+    }
+
+    function normalizeBase64(value) {
+        return value.trim().replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '').replace(/\s+/g, '');
+    }
+
+    function isValidBase64(value) {
+        if (!value || value.length % 4 !== 0) return false;
+        return /^[A-Za-z0-9+/]*={0,2}$/.test(value);
+    }
+
+    function detectMime(bytes) {
+        if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return 'image/png';
+        if (bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return 'image/jpeg';
+        if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
+        if (bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+        if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4D) return 'image/bmp';
+        return '';
+    }
+
+    encodeButton.addEventListener('click', () => {
+        clearMessage();
+        encodeResult.classList.remove('visible');
+
+        const file = imageInput.files[0];
+
+        if (!file) {
+            showMessage('Сначала выбери изображение.');
+            return;
+        }
+
+        if (!file.type.startsWith('image/')) {
+            showMessage('Можно выбрать только изображение.');
+            return;
+        }
+
+        if (file.size > maxFileSize) {
+            showMessage('Файл слишком большой. Максимальный размер — 10 МБ.');
+            return;
+        }
+
+        const reader = new FileReader();
+
+        reader.onload = () => {
+            lastDataUrl = reader.result;
+            const base64 = lastDataUrl.split(',')[1] ?? '';
+            encodedText.value = base64;
+            imageMeta.textContent = `${file.name} · ${file.type || 'image'} · ${formatBytes(file.size)}`;
+            encodeResult.classList.add('visible');
+        };
+
+        reader.onerror = () => showMessage('Не удалось прочитать файл.');
+        reader.readAsDataURL(file);
+    });
+
+    copyButton.addEventListener('click', async () => {
+        if (!encodedText.value) return;
+        await navigator.clipboard.writeText(encodedText.value);
+        showMessage('Base64 скопирован.', 'success');
+    });
+
+    copyDataUrlButton.addEventListener('click', async () => {
+        if (!lastDataUrl) return;
+        await navigator.clipboard.writeText(lastDataUrl);
+        showMessage('Data URL скопирован.', 'success');
+    });
+
+    decodeButton.addEventListener('click', () => {
+        clearMessage();
+        decodeResult.classList.remove('visible');
+        preview.removeAttribute('src');
+
+        const raw = base64Input.value.trim();
+
+        if (!raw) {
+            showMessage('Вставь Base64-код изображения.');
+            return;
+        }
+
+        const declaredMimeMatch = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+        const base64 = normalizeBase64(raw);
+
+        if (!isValidBase64(base64)) {
+            showMessage('Base64-код повреждён или имеет неверный формат.');
+            return;
+        }
+
+        try {
+            const binary = atob(base64);
+
+            if (binary.length > maxFileSize) {
+                showMessage('Декодированное изображение слишком большое. Максимум — 10 МБ.');
+                return;
+            }
+
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+            const detectedMime = detectMime(bytes);
+            const mime = declaredMimeMatch?.[1] || detectedMime;
+
+            if (!mime || !mime.startsWith('image/')) {
+                showMessage('Base64 содержит данные, но формат изображения не удалось определить.');
+                return;
+            }
+
+            const blob = new Blob([bytes], { type: mime });
+            const url = URL.createObjectURL(blob);
+
+            preview.onload = () => {
+                decodedMeta.textContent = `${mime} · ${formatBytes(bytes.length)} · ${preview.naturalWidth}×${preview.naturalHeight}`;
+                decodeResult.classList.add('visible');
+                URL.revokeObjectURL(url);
+            };
+
+            preview.onerror = () => {
+                URL.revokeObjectURL(url);
+                showMessage('Данные декодировались, но браузер не смог открыть их как изображение.');
+            };
+
+            preview.src = url;
+        } catch {
+            showMessage('Не удалось декодировать Base64.');
+        }
+    });
+</script>
+</body>
+</html>
